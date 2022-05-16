@@ -1,0 +1,235 @@
+# install.packages("e1071" )
+# installed.packages("caret")
+# library(e1071)
+# library(caret)
+# library(pROC)
+
+data<- subset(FinancePnlInd_All,In_Sample==1)
+data<- subset(data, select=-IND_OCC_AMOUNT)
+data<- subset(data, select=-In_Sample)
+
+
+formula_svm_factor= factor(ISLEARNING_IND)~ AVG_3_INVOICES+OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+
+  NUM_OF_NP+COUNT_INVOICE_3_YEAR+SOCIO_ECONOMIC_CODE+NUM_OF_DUNN_LST_YR+
+  NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+NUM_OF_CELL_NET+NUM_OF_VOB_NET+
+  NUM_OF_ISP_NET+NUM_OF_MODEM_NET+IND_NUM_DAYS_DUNN+
+  IND_AVG_3INV_50+OCC_AMOUNT_CURR_GRP+CUSTOMER_VETEK_GRP+AVG_3_INVOICES_GRP
+
+dataall<- subset(FinancePnlInd_All, select=-IND_OCC_AMOUNT)
+dataall<- subset(dataall, select=-In_Sample)
+
+# take some time to process svm
+svm_model_factor <- svm(formula=formula_svm_factor, data=data, probability=TRUE) 
+summary(svm_model_factor)
+
+predictedYfact <- predict(svm_model_factor, dataall, probability=TRUE)
+
+summary(predictedYfact)
+attr(predictedYfact, "probabilities")
+
+predInd_svm_fact<-as.data.frame(attr(predictedYfact, "probabilities"))
+predInd_svm_fact<-predInd_svm_fact[,2]
+summary(predInd_svm_fact)
+names(predInd_svm_fact)<-'pred_svm_fact'
+predInd_svm_fact<-cbind(FinancePnlInd_All,predInd_svm_fact)
+
+
+predInd_svm_fact_in<-subset(predInd_svm_fact,In_Sample==1)
+predInd_svm_fact_out<-subset(predInd_svm_fact,In_Sample==0)
+
+#for svm insample
+auc_svm_fact_in <- auc(predInd_svm_fact_in$ISLEARNING_IND,predInd_svm_fact_in$predInd_svm_fact)
+gini_svm_fact_in <- auc_svm_fact_in*2-1  
+
+#for svm outsample
+auc_svm_fact_out <- auc(predInd_svm_fact_out$ISLEARNING_IND,predInd_svm_fact_out$predInd_svm_fact)
+gini_svm_fact_out <- auc_svm_fact_out*2-1  
+
+#svm_tune <- tune(svm, train.x=subset(data,select=-ISLEARNING_IND), train.y=data$ISLEARNING_IND, kernel="radial", ranges=list(cost=10^(-1:2), gamma=c(.5,1,2)))
+#print(svm_tune) 
+
+
+########################################################################################
+
+#logistic regression
+
+
+fit_glm <- glm(formula_svm_factor,family=binomial(link = "logit"),data=subset(FinancePnlInd_All,In_Sample==1))
+
+summary(fit_glm)
+pred_glm<-predict.glm(fit_glm, FinancePnlInd_All, type="response")
+
+pred_glm_fact<-cbind(FinancePnlInd_All,pred_glm)
+
+predInd_glm_fact_in<-subset(pred_glm_fact,In_Sample==1)
+predInd_glm_fact_out<-subset(pred_glm_fact,In_Sample==0)
+
+#for glm insample
+auc_glm_fact_in <- auc(predInd_glm_fact_in$ISLEARNING_IND,predInd_glm_fact_in$pred_glm)
+gini_glm_fact_in <- auc_glm_fact_in*2-1  
+
+#for glm outsample
+auc_glm_fact_out <- auc(predInd_glm_fact_out$ISLEARNING_IND,predInd_glm_fact_out$pred_glm)
+gini_glm_fact_out <- auc_glm_fact_out*2-1  
+
+#neural network
+# library(nnet)
+
+
+nn_log_1 <-nnet(formula_svm_factor, data=subset(FinancePnlInd_All,In_Sample==1),size=5
+                ,maxit=20000,decay=.001)
+
+pred_nn_fact<-predict(nn_log_1,FinancePnlInd_All,type="raw")
+
+pred_nn_fact<-cbind(FinancePnlInd_All,pred_nn_fact)
+
+pred_nn_fact_in<-subset(pred_nn_fact,In_Sample==1)
+pred_nn_fact_out<-subset(pred_nn_fact,In_Sample==0)
+
+#for glm insample
+auc_nn_in <- auc(pred_nn_fact_in$ISLEARNING_IND,pred_nn_fact_in$pred_nn_fact)
+gini_nn_in <- auc_nn_in*2-1  
+
+#for glm outsample
+auc_nn_out <- auc(pred_nn_fact_out$ISLEARNING_IND,pred_nn_fact_out$pred_nn_fact)
+gini_nn_out <- auc_nn_out*2-1  
+
+
+
+# tree
+# library(rpart)
+
+
+tree_log <-rpart(formula_svm_factor, data=subset(FinancePnlInd_All,In_Sample==1),method="anova" )
+
+tree_log<-prune(tree_log,cp=tree_log$cptable[which.min(tree_log$cptable[,"xerror"]),"CP"])
+pred_tree_log<-predict(tree_log,FinancePnlInd_All)
+
+pred_tree_log<-cbind(FinancePnlInd_All,pred_tree_log)
+
+pred_tree_log_in<-subset(pred_tree_log,In_Sample==1)
+pred_tree_log_out<-subset(pred_tree_log,In_Sample==0)
+
+#for glm insample
+auc_tree_in <- auc(pred_tree_log_in$ISLEARNING_IND,pred_tree_log_in$pred_tree_log)
+gini_tree_in <- auc_tree_in*2-1  
+
+#for glm outsample
+auc_tree_out <- auc(pred_tree_log_out$ISLEARNING_IND,pred_tree_log_out$pred_tree_log)
+gini_tree_out <- auc_tree_out*2-1  
+
+gini_in<-rbind(cbind('svm',gini_svm_fact_in ),cbind('logistic',gini_glm_fact_in ),cbind('tree',gini_tree_in ),cbind('nn',gini_nn_in ))
+
+gini_out<-rbind(cbind('svm',gini_svm_fact_out ),cbind('logistic',gini_glm_fact_out ),cbind('tree',gini_tree_out ),cbind('nn',gini_nn_out ))
+
+gini_in
+gini_out
+
+
+
+
+#########################################################################################################################################
+
+
+#for svm cont
+names(dataall)
+dataall_cont<-subset(FinancePnlAmt_All,In_Sample==1)
+# dataall<- subset(dataall, select=-IND_OCC_AMOUNT)
+# dataall<- subset(dataall, select=-In_Sample)
+
+formula_svm_amt= ISLEARNING_AMT~ AVG_3_INVOICES+OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+
+  NUM_OF_NP+COUNT_INVOICE_3_YEAR+SOCIO_ECONOMIC_CODE+NUM_OF_DUNN_LST_YR+
+  NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+NUM_OF_CELL_NET+NUM_OF_VOB_NET+
+  NUM_OF_ISP_NET+NUM_OF_MODEM_NET+IND_NUM_DAYS_DUNN+
+  IND_AVG_3INV_50+OCC_AMOUNT_CURR_GRP+CUSTOMER_VETEK_GRP+AVG_3_INVOICES_GRP
+
+svm_model_amt <- svm(formula=formula_svm_amt, data=dataall_cont) 
+predictedAmt <- predict(svm_model_amt, FinancePnlAmt_All,probability=TRUE)
+
+predictedAmt<-cbind(FinancePnlAmt_All,predictedAmt)
+
+predictedAmt_in<-subset(predictedAmt,In_Sample==1)
+predictedAmt_out<-subset(predictedAmt,In_Sample==0)
+
+
+R2_svm_in<-R2(predictedAmt_in$predictedAmt, predictedAmt_in$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+RMSE_svm_in<-RMSE(predictedAmt_in$predictedAmt, predictedAmt_in$ISLEARNING_AMT, na.rm = FALSE)
+
+
+R2_svm_out<-R2(predictedAmt_out$predictedAmt, predictedAmt_out$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+RMSE_svm_out<-RMSE(predictedAmt_out$predictedAmt, predictedAmt_out$ISLEARNING_AMT, na.rm = FALSE)
+
+################################################################################################################
+
+#Linear regression
+
+fit_lm <- lm(formula_svm_amt,subset(FinancePnlAmt_All,In_Sample==1))
+summary(fit_lm)
+pred_lm<-predict(fit_lm, FinancePnlAmt_All)
+
+pred_lm<-cbind(FinancePnlAmt_All,pred_lm)
+
+pred_lm_in<-subset(pred_lm,In_Sample==1)
+pred_lm_out<-subset(pred_lm,In_Sample==0)
+
+lm_R2_in<-R2(pred_lm_in$pred_lm, pred_lm_in$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+lm_RMSE_in<-RMSE(pred_lm_in$pred_lm, pred_lm_in$ISLEARNING_AMT, na.rm = FALSE)
+
+lm_R2_out<-R2(pred_lm_out$pred_lm, pred_lm_out$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+lm_RMSE_out<-RMSE(pred_lm_out$pred_lm, pred_lm_out$ISLEARNING_AMT, na.rm = FALSE)
+
+#neural network
+# library(nnet)
+formula_NN=ISLEARNING_AMT/68218~ OCC_AMOUNT_CURR_WITH_VAT+COUNT_INVOICE_3_YEAR+
+  NUM_DAYS_DUNN_LST_YR+IND_OCC_AMOUNT 
+
+
+
+nn_bp_lin <-nnet(formula_NN, data=subset(FinancePnlAmt_All,In_Sample==1),linout=T, size = 3,skip=TRUE, maxit=2000)
+pred_nn_lin<-predict(nn_bp_lin,FinancePnlAmt_All)*68218
+
+pred_nn_lin <-data.frame( FinancePnlAmt_All, pred_nn_lin )
+
+pred_nn_lin_in <- subset(pred_nn_lin,In_Sample==1)
+pred_nn_lin_out <-subset(pred_nn_lin,In_Sample==0)
+
+
+nn_R2_in<-R2(pred_nn_lin_in$pred_nn_lin, pred_nn_lin_in$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+nn_RMSE_in<-RMSE(pred_nn_lin_in$pred_nn_lin, pred_nn_lin_in$ISLEARNING_AMT, na.rm = FALSE)
+
+nn_R2_out<-R2(pred_nn_lin_out$pred_nn_lin, pred_nn_lin_out$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+nn_RMSE_out<-RMSE(pred_nn_lin_out$pred_nn_lin, pred_nn_lin_out$ISLEARNING_AMT, na.rm = FALSE)
+
+
+# tree
+# library(rpart)
+
+
+tree_lin <-rpart(formula_svm_amt, data=subset(FinancePnlAmt_All,In_Sample==1),method="anova" )
+
+tree_lin<-prune(tree_lin,cp=tree_lin$cptable[which.min(tree_lin$cptable[,"xerror"]),"CP"])
+pred_tree_lin<-predict(tree_lin,FinancePnlAmt_All)
+summary(pred_tree_lin)
+pred_tree_lin <-data.frame( FinancePnlAmt_All, pred_tree_lin )
+
+pred_tree_lin_in <- subset(pred_tree_lin,In_Sample==1)
+pred_tree_lin_out <-subset(pred_tree_lin,In_Sample==0)
+
+tree_R2_in<-R2(pred_tree_lin_in$pred_tree_lin, pred_tree_lin_in$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+tree_RMSE_in<-RMSE(pred_tree_lin_in$pred_tree_lin, pred_tree_lin_in$ISLEARNING_AMT, na.rm = FALSE)
+
+tree_R2_out<-R2(pred_tree_lin_out$pred_tree_lin, pred_tree_lin_out$ISLEARNING_AMT, formula = "corr", na.rm = FALSE)
+tree_RMSE_out<-RMSE(pred_tree_lin_out$pred_tree_lin, pred_tree_lin_out$ISLEARNING_AMT, na.rm = FALSE)
+
+
+R2_in<-rbind(cbind('svm',R2_svm_in ),cbind('logistic',lm_R2_in ),cbind('tree',tree_R2_in ),cbind('nn',nn_R2_in ))
+R2_out<-rbind(cbind('svm',R2_svm_out ),cbind('logistic',lm_R2_out ),cbind('tree',tree_R2_out ),cbind('nn',nn_R2_out ))
+
+R2_in
+R2_out
+
+RMSE_in<-rbind(cbind('svm',RMSE_svm_in ),cbind('logistic',lm_RMSE_in ),cbind('tree',tree_RMSE_in ),cbind('nn',nn_RMSE_in ))
+RMSE_out<-rbind(cbind('svm',RMSE_svm_out ),cbind('logistic',lm_RMSE_out ),cbind('tree',tree_RMSE_out ),cbind('nn',nn_RMSE_out ))
+
+RMSE_in
+RMSE_out
