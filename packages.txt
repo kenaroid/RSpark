@@ -1,0 +1,9 @@
+
+install.packages("e1071" )
+installed.packages("caret")
+library(e1071)
+library(caret)
+library(pROC)
+library(nnet)
+library(rpart)
+
