@@ -1,0 +1,147 @@
+
+# ****Preliminary step: Clear 'Global Environment' and stop SparkR if already exists:
+sparkR.stop()
+rm(list = ls())
+
+
+# Declare environment Variables and linked 'SparkR' and 'spark-csv' packages
+# work from home (52.33.137.113:8787) - 
+# Sys.setenv(SPARK_HOME = "/usr/hdp/2.4.2.0-258/spark")
+# work from class (52.32.197.122:8787) -
+Sys.setenv(SPARK_HOME = "/usr/hdp/2.4.3.0-227/spark") 
+library(SparkR, lib.loc = c(file.path(Sys.getenv("SPARK_HOME"), "R", "lib")))
+Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.11:1.3.0,org.apache.hadoop:hadoop-aws:2.7.1" "sparkr-shell"')
+AccKey <- Sys.getenv("AccKey")
+SecAcc <- Sys.getenv("SecAcc")
+
+
+# Configure SparkR and declare Hive context 
+sc <- sparkR.init(master = "yarn-client", appName = "SparkR-User")
+sqlContextRHive <- sparkRHive.init(sc)
+
+# # Declare csv source file
+# sInputFiles = c('s3n://', AccKey, ':', SecAcc, '@gstatlab/Output/Users/Naama/Finance_Profile.csv')
+# inputFiles = paste(sInputFiles, collapse = '')
+# 
+# # Declare Spark data frame
+# customSchema <- structType(structField("CUSTOMER_ID","integer"),
+#                            structField("OCC_AMOUNT_CURR_WITH_VAT","double"),
+#                            structField("CUSTOMER_VETEK","double"),
+#                            structField("PAYMENT_TYPE_DESC","string"),
+#                            structField("AVG_3_INVOICES","double"),
+#                            structField("NUM_OF_NP","integer"),
+#                            structField("COUNT_INVOICE_3_YEAR","integer"),
+#                            structField("SOCIO_ECONOMIC_CODE","integer"),
+#                            structField("NUM_OF_DUNN_LST_YR","integer"),
+#                            structField("NUM_DAYS_DUNN_LST_YR","integer"),
+#                            structField("TIME_FROM_LAST_DUNN","double"),
+#                            structField("NUM_OF_CELL_NET","integer"),
+#                            structField("NUM_OF_VOB_NET","integer"),
+#                            structField("NUM_OF_ISP_NET","integer"),
+#                            structField("NUM_OF_MODEM_NET","integer"),
+#                            structField("GRP_VETEK","string"),
+#                            structField("ISLEARNING_IND","integer"),
+#                            structField("ISLEARNING_AMT","double"))
+# 
+# # upload from csv to dataframe
+# FinancePnl <- read.df(sqlContextRHive, inputFiles, source = "com.databricks.spark.csv",delimiter= ",", schema = customSchema,header="true")
+# 
+# 
+# FinancePnl_sample = sample(FinancePnl, FALSE, 0.9)
+# dim(FinancePnl_sample)
+# 
+# #saveAsTable(FinancePnl_sample, 'FinancePnl',"parquet", "overwrite")
+
+
+
+############ START RUN HERE ################
+# sInputFiles = c('s3n://', AccKey, ':', SecAcc, '@gstatlab/Output/Users/Naama/FinancePnl')
+# inputFiles = paste(sInputFiles, collapse = '')
+
+
+# create data file for binary model (clasification tree)
+query_ind <- 
+  "select CUSTOMER_ID, OCC_AMOUNT_CURR_WITH_VAT, CUSTOMER_VETEK, AVG_3_INVOICES,NUM_OF_NP, COUNT_INVOICE_3_YEAR,
+SOCIO_ECONOMIC_CODE, NUM_OF_DUNN_LST_YR, NUM_DAYS_DUNN_LST_YR, 
+TIME_FROM_LAST_DUNN, NUM_OF_CELL_NET, NUM_OF_VOB_NET, NUM_OF_ISP_NET,
+NUM_OF_MODEM_NET,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0 else 1 end as IND_OCC_AMOUNT,
+case when NUM_DAYS_DUNN_LST_YR=0 then 1 else 0 end as IND_NUM_DAYS_DUNN,
+case when AVG_3_INVOICES<=50 then 1 else 0 end as IND_AVG_3INV_50,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0
+when OCC_AMOUNT_CURR_WITH_VAT<=50 then 1
+when OCC_AMOUNT_CURR_WITH_VAT<=100 then 2
+when OCC_AMOUNT_CURR_WITH_VAT<=500 then 3
+when OCC_AMOUNT_CURR_WITH_VAT<=1000 then 4
+when OCC_AMOUNT_CURR_WITH_VAT<=5000 then 5
+else 6 end as OCC_AMOUNT_CURR_GRP,
+case when CUSTOMER_VETEK<=30 then 0
+when CUSTOMER_VETEK<=60 then 1
+when CUSTOMER_VETEK<=90 then 2
+when CUSTOMER_VETEK<=180 then 3
+when CUSTOMER_VETEK<=365 then 4
+when CUSTOMER_VETEK<=730 then 5
+else 6 end as CUSTOMER_VETEK_GRP,
+case when AVG_3_INVOICES=0 then 0
+when AVG_3_INVOICES<=50 then 1
+when AVG_3_INVOICES<=100 then 2
+when AVG_3_INVOICES<=150 then 3
+when AVG_3_INVOICES<=200 then 4
+when AVG_3_INVOICES<=500 then 5
+else 6 end as AVG_3_INVOICES_GRP
+,case when rand()<0.7 then 1 else 0 end as In_Sample
+,ISLEARNING_IND
+from FinancePnl as a
+where  OCC_AMOUNT_CURR_WITH_VAT>0"
+
+# create data file for continuous model (regression tree)
+query_amt <- 
+  "select CUSTOMER_ID, OCC_AMOUNT_CURR_WITH_VAT, CUSTOMER_VETEK, PAYMENT_TYPE_DESC, AVG_3_INVOICES,  
+NUM_OF_NP, COUNT_INVOICE_3_YEAR, SOCIO_ECONOMIC_CODE, NUM_OF_DUNN_LST_YR, NUM_DAYS_DUNN_LST_YR,
+TIME_FROM_LAST_DUNN, NUM_OF_CELL_NET, NUM_OF_VOB_NET, NUM_OF_ISP_NET, NUM_OF_MODEM_NET, GRP_VETEK,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0 else 1 end as IND_OCC_AMOUNT,
+case when NUM_DAYS_DUNN_LST_YR=0 then 1 else 0 end as IND_NUM_DAYS_DUNN,
+case when AVG_3_INVOICES<=50 then 1 else 0 end as IND_AVG_3INV_50,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0
+when OCC_AMOUNT_CURR_WITH_VAT<=50 then 1
+when OCC_AMOUNT_CURR_WITH_VAT<=100 then 2
+when OCC_AMOUNT_CURR_WITH_VAT<=500 then 3
+when OCC_AMOUNT_CURR_WITH_VAT<=1000 then 4
+when OCC_AMOUNT_CURR_WITH_VAT<=5000 then 5 
+else 6 end as OCC_AMOUNT_CURR_GRP,
+case when CUSTOMER_VETEK<=30 then 0 
+when CUSTOMER_VETEK<=60 then 1
+when CUSTOMER_VETEK<=90 then 2
+when CUSTOMER_VETEK<=180 then 3
+when CUSTOMER_VETEK<=365 then 4
+when CUSTOMER_VETEK<=730 then 5
+else 6 end as CUSTOMER_VETEK_GRP,
+case when AVG_3_INVOICES=0 then 0
+when AVG_3_INVOICES<=50 then 1
+when AVG_3_INVOICES<=100 then 2
+when AVG_3_INVOICES<=150 then 3
+when AVG_3_INVOICES<=200 then 4
+when AVG_3_INVOICES<=500 then 5
+else 6 end as AVG_3_INVOICES_GRP
+,case when rand()<0.7 then 1 else 0 end as In_Sample
+,ISLEARNING_AMT
+from FinancePnl as a
+where ISLEARNING_AMT>0 "
+
+
+
+#insert into dataframe the query results
+FinancePnl_Ind <- sql(sqlContextRHive, query_ind)
+FinancePnl_Amt <- sql(sqlContextRHive, query_amt)
+
+
+# collect data to R (sample)
+FinancePnlInd_All<-collect(sample(FinancePnl_Ind, FALSE, 0.99))
+FinancePnlAmt_All<-collect(sample(FinancePnl_Amt, FALSE, 0.99))
+
+
+# View(FinancePnlInd_All)
+# head(FinancePnlAmt_All)
+
+
+sparkR.stop()
