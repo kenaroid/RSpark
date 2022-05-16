@@ -1,0 +1,483 @@
+# Preliminary step: Clear 'Global Environment' and stop SparkR if already exists:
+sparkR.stop()
+rm(list = ls())
+
+
+# Declare environment Variables and linked 'SparkR' and 'spark-csv' packages
+Sys.setenv(SPARK_HOME = "/usr/hdp/2.4.3.0-227/spark")
+library(SparkR, lib.loc = c(file.path(Sys.getenv("SPARK_HOME"), "R", "lib")))
+Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.11:1.3.0,org.apache.hadoop:hadoop-aws:2.7.1" "sparkr-shell"')
+AccKey <- Sys.getenv("AccKey")
+SecAcc <- Sys.getenv("SecAcc")
+
+# Configure SparkR and declare Hive context 
+sc <- sparkR.init(master = "yarn-client", appName = "SparkR-User")
+sqlContextRHive <- sparkRHive.init(sc)
+
+# Declare csv source file
+sInputFiles = c('s3n://', AccKey, ':', SecAcc, '@gstatlab/Output/Users/Naama/Finance_Profile.csv')
+inputFiles = paste(sInputFiles, collapse = '')
+
+# Declare Spark data frame
+customSchema <- structType(structField("CUSTOMER_ID","integer"),
+                           structField("OCC_AMOUNT_CURR_WITH_VAT","double"),
+                           structField("CUSTOMER_VETEK","double"),
+                           structField("PAYMENT_TYPE_DESC","string"),
+                           structField("AVG_3_INVOICES","double"),
+                           structField("NUM_OF_NP","integer"),
+                           structField("COUNT_INVOICE_3_YEAR","integer"),
+                           structField("SOCIO_ECONOMIC_CODE","integer"),
+                           structField("NUM_OF_DUNN_LST_YR","integer"),
+                           structField("NUM_DAYS_DUNN_LST_YR","integer"),
+                           structField("TIME_FROM_LAST_DUNN","double"),
+                           structField("NUM_OF_CELL_NET","integer"),
+                           structField("NUM_OF_VOB_NET","integer"),
+                           structField("NUM_OF_ISP_NET","integer"),
+                           structField("NUM_OF_MODEM_NET","integer"),
+                           structField("GRP_VETEK","string"),
+                           structField("ISLEARNING_IND","integer"),
+                           structField("ISLEARNING_AMT","double"))
+
+# upload from csv to dataframe
+FinancePnl <- read.df(sqlContextRHive, inputFiles, source = "com.databricks.spark.csv",delimiter= ",", schema = customSchema,header="true")
+
+head(FinancePnl,7)
+printSchema(FinancePnl)
+count(FinancePnl)
+
+FinancePnl_sample = sample(FinancePnl, FALSE, 0.1)
+count(FinancePnl_sample)
+
+saveAsTable(FinancePnl_sample, 'FinancePnl',"parquet", "overwrite")
+
+############ START RUN HERE ################
+
+# create data file for binary model (clasification tree)
+query_ind <- 
+  "select CUSTOMER_ID, OCC_AMOUNT_CURR_WITH_VAT, CUSTOMER_VETEK, PAYMENT_TYPE_DESC, AVG_3_INVOICES,
+NUM_OF_NP, COUNT_INVOICE_3_YEAR, SOCIO_ECONOMIC_CODE, NUM_OF_DUNN_LST_YR, NUM_DAYS_DUNN_LST_YR, 
+TIME_FROM_LAST_DUNN, NUM_OF_CELL_NET, NUM_OF_VOB_NET, NUM_OF_ISP_NET, NUM_OF_MODEM_NET, GRP_VETEK,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0 else 1 end as IND_OCC_AMOUNT,
+case when NUM_DAYS_DUNN_LST_YR=0 then 1 else 0 end as IND_NUM_DAYS_DUNN,
+case when AVG_3_INVOICES<=50 then 1 else 0 end as IND_AVG_3INV_50,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then '0' 
+when OCC_AMOUNT_CURR_WITH_VAT<=50 then '0-50'
+when OCC_AMOUNT_CURR_WITH_VAT<=100 then '50-100'
+when OCC_AMOUNT_CURR_WITH_VAT<=500 then '100-500'
+when OCC_AMOUNT_CURR_WITH_VAT<=1000 then '500-1000'
+when OCC_AMOUNT_CURR_WITH_VAT<='5000' then '1000-5000'
+else '5000+' end as OCC_AMOUNT_CURR_GRP,
+case when CUSTOMER_VETEK<=30 then '1month'
+when CUSTOMER_VETEK<=60 then '1-2month'
+when CUSTOMER_VETEK<=90 then '2-3month'
+when CUSTOMER_VETEK<=180 then '3-6month'
+when CUSTOMER_VETEK<=365 then '6-12month'
+when CUSTOMER_VETEK<=730 then '12-24month'
+else '24month+' end as CUSTOMER_VETEK_GRP,
+case when AVG_3_INVOICES=0 then '0'
+when AVG_3_INVOICES<=50 then '0-50'
+when AVG_3_INVOICES<=100 then '50-100'
+when AVG_3_INVOICES<=150 then '100-150'
+when AVG_3_INVOICES<=200 then '150-200'
+when AVG_3_INVOICES<=500 then '200-500'
+else '500+' end as AVG_3_INVOICES_GRP
+,case when rand()<0.7 then 1 else 0 end as In_Sample
+,ISLEARNING_IND
+from FinancePnl as a
+where  OCC_AMOUNT_CURR_WITH_VAT>0"
+
+# create data file for continuous model (regression tree)
+query_amt <- 
+  "select CUSTOMER_ID, OCC_AMOUNT_CURR_WITH_VAT, CUSTOMER_VETEK, PAYMENT_TYPE_DESC, AVG_3_INVOICES,  
+NUM_OF_NP, COUNT_INVOICE_3_YEAR, SOCIO_ECONOMIC_CODE, NUM_OF_DUNN_LST_YR, NUM_DAYS_DUNN_LST_YR,
+TIME_FROM_LAST_DUNN, NUM_OF_CELL_NET, NUM_OF_VOB_NET, NUM_OF_ISP_NET, NUM_OF_MODEM_NET, GRP_VETEK,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0 else 1 end as IND_OCC_AMOUNT,
+case when NUM_DAYS_DUNN_LST_YR=0 then 1 else 0 end as IND_NUM_DAYS_DUNN,
+case when AVG_3_INVOICES<=50 then 1 else 0 end as IND_AVG_3INV_50,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then '0' 
+when OCC_AMOUNT_CURR_WITH_VAT<=50 then '0-50'
+when OCC_AMOUNT_CURR_WITH_VAT<=100 then '50-100'
+when OCC_AMOUNT_CURR_WITH_VAT<=500 then '100-500'
+when OCC_AMOUNT_CURR_WITH_VAT<=1000 then '500-1000'
+when OCC_AMOUNT_CURR_WITH_VAT<='5000' then '1000-5000'
+else '5000+' end as OCC_AMOUNT_CURR_GRP,
+case when CUSTOMER_VETEK<=30 then '1month'
+when CUSTOMER_VETEK<=60 then '1-2month'
+when CUSTOMER_VETEK<=90 then '2-3month'
+when CUSTOMER_VETEK<=180 then '3-6month'
+when CUSTOMER_VETEK<=365 then '6-12month'
+when CUSTOMER_VETEK<=730 then '12-24month'
+else '24month+' end as CUSTOMER_VETEK_GRP,
+case when AVG_3_INVOICES=0 then '0'
+when AVG_3_INVOICES<=50 then '0-50'
+when AVG_3_INVOICES<=100 then '50-100'
+when AVG_3_INVOICES<=150 then '100-150'
+when AVG_3_INVOICES<=200 then '150-200'
+when AVG_3_INVOICES<=500 then '200-500'
+else '500+' end as AVG_3_INVOICES_GRP
+,case when rand()<0.7 then 1 else 0 end as In_Sample
+,ISLEARNING_AMT
+from FinancePnl as a
+where ISLEARNING_AMT>0 "
+
+
+# create data file for multinome model (clasification tree)
+query_amt_grp <- 
+  "select CUSTOMER_ID, OCC_AMOUNT_CURR_WITH_VAT, CUSTOMER_VETEK, PAYMENT_TYPE_DESC, AVG_3_INVOICES,  
+NUM_OF_NP, COUNT_INVOICE_3_YEAR, SOCIO_ECONOMIC_CODE, NUM_OF_DUNN_LST_YR, NUM_DAYS_DUNN_LST_YR,
+TIME_FROM_LAST_DUNN, NUM_OF_CELL_NET, NUM_OF_VOB_NET, NUM_OF_ISP_NET, NUM_OF_MODEM_NET, GRP_VETEK,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then 0 else 1 end as IND_OCC_AMOUNT,
+case when NUM_DAYS_DUNN_LST_YR=0 then 1 else 0 end as IND_NUM_DAYS_DUNN,
+case when AVG_3_INVOICES<=50 then 1 else 0 end as IND_AVG_3INV_50,
+case when OCC_AMOUNT_CURR_WITH_VAT=0 then '0' 
+when OCC_AMOUNT_CURR_WITH_VAT<=50 then '0-50'
+when OCC_AMOUNT_CURR_WITH_VAT<=100 then '50-100'
+when OCC_AMOUNT_CURR_WITH_VAT<=500 then '100-500'
+when OCC_AMOUNT_CURR_WITH_VAT<=1000 then '500-1000'
+when OCC_AMOUNT_CURR_WITH_VAT<='5000' then '1000-5000'
+else '5000+' end as OCC_AMOUNT_CURR_GRP,
+case when CUSTOMER_VETEK<=30 then '1month'
+when CUSTOMER_VETEK<=60 then '1-2month'
+when CUSTOMER_VETEK<=90 then '2-3month'
+when CUSTOMER_VETEK<=180 then '3-6month'
+when CUSTOMER_VETEK<=365 then '6-12month'
+when CUSTOMER_VETEK<=730 then '12-24month'
+else '24month+' end as CUSTOMER_VETEK_GRP,
+case when AVG_3_INVOICES=0 then '0'
+when AVG_3_INVOICES<=50 then '0-50'
+when AVG_3_INVOICES<=100 then '50-100'
+when AVG_3_INVOICES<=150 then '100-150'
+when AVG_3_INVOICES<=200 then '150-200'
+when AVG_3_INVOICES<=500 then '200-500'
+else '500+' end as AVG_3_INVOICES_GRP
+,case when rand()<0.7 then 1 else 0 end as In_Sample
+,case when ISLEARNING_AMT<=100 then '0-100'
+when ISLEARNING_AMT<=500 then '100-500'
+when ISLEARNING_AMT<=1000 then '500-1000'
+else '1000+' end as ISLEARNING_AMT_GRP
+from FinancePnl as a
+where ISLEARNING_AMT>0 "
+
+
+#insert into dataframe the query results
+FinancePnl_Ind <- sql(sqlContextRHive, query_ind)
+FinancePnl_Amt <- sql(sqlContextRHive, query_amt)
+FinancePnl_Amt_Grp <- sql(sqlContextRHive, query_amt_grp)
+
+
+# collect data to R (sample)
+FinancePnlInd_All<-collect(sample(FinancePnl_Ind, FALSE, 0.5))
+FinancePnlAmt_All<-collect(FinancePnl_Amt)
+FinancePnlAmtGrp_All<-collect(FinancePnl_Amt_Grp)
+
+# over view on the data
+head(FinancePnlAmt_All,10)
+dim(FinancePnlInd_All)
+dim(FinancePnlAmt_All)
+dim(FinancePnlAmtGrp_All)
+
+summary(FinancePnlInd_All$In_Sample  )
+summary(FinancePnlInd_All$ISLEARNING_IND  )
+summary(FinancePnlInd_All$OCC_AMOUNT_CURR_WITH_VAT )
+
+# Two-dimensional statistics Preview
+install.packages("ggplot2")
+library(ggplot2)
+
+ggplot(FinancePnlAmt_All,aes(y=ISLEARNING_AMT, x=OCC_AMOUNT_CURR_WITH_VAT))+geom_point()
+ggplot(FinancePnlAmt_All,aes(y=ISLEARNING_AMT, x=CUSTOMER_VETEK))+geom_point()
+ggplot(FinancePnlAmt_All,aes(y=ISLEARNING_AMT, x=PAYMENT_TYPE_DESC))+geom_point()
+
+
+########## Decision trees #########
+
+# get ready for decision tree
+install.packages("rpart")
+library(rpart)
+# for nicer plots
+install.packages("rpart.plot")
+library(rpart.plot)
+
+
+
+# tree_ind 
+# Dependent variable= ISLEARNING_IND 1/0
+# method="anova"
+# training data 70% in-sample
+# in this case method='class' is not relevant becuase the pct of learning is very small
+
+tree_ind <- rpart(ISLEARNING_IND  ~ . , method="anova" ,data= subset(FinancePnlInd_All,In_Sample==1))
+# see the results
+tree_ind
+
+# another verssion 
+part_colm = ISLEARNING_IND~ OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+PAYMENT_TYPE_DESC+AVG_3_INVOICES+
+  NUM_OF_NP+COUNT_INVOICE_3_YEAR+SOCIO_ECONOMIC_CODE+NUM_OF_DUNN_LST_YR+NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+
+  NUM_OF_CELL_NET+NUM_OF_VOB_NET+NUM_OF_ISP_NET+NUM_OF_MODEM_NET+GRP_VETEK+IND_OCC_AMOUNT+IND_NUM_DAYS_DUNN+
+  IND_AVG_3INV_50+OCC_AMOUNT_CURR_GRP+CUSTOMER_VETEK_GRP+AVG_3_INVOICES_GRP
+tree_ind <- rpart(part_colm , method="anova" ,data= subset(FinancePnlInd_All,In_Sample==1))
+
+tree_ind
+summary(tree_ind)
+
+plot(tree_ind)
+text(tree_ind,all=TRUE, use.n =TRUE )
+#could be nicer plots....
+
+rpart.plot(tree_ind, extra=101,tweak=1)
+
+# tree_amt_grp 
+# Dependent variable= ISLEARNING_AMT_GRP Moltinom
+# method="class"
+# training data 70% in-sample
+
+#Regular Statistics
+table(FinancePnlAmtGrp_All$ISLEARNING_AMT_GRP)
+
+part_colm_amt_grp = ISLEARNING_AMT_GRP~ OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+PAYMENT_TYPE_DESC+AVG_3_INVOICES+
+  NUM_OF_NP+COUNT_INVOICE_3_YEAR+SOCIO_ECONOMIC_CODE+NUM_OF_DUNN_LST_YR+NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+
+  NUM_OF_CELL_NET+NUM_OF_VOB_NET+NUM_OF_ISP_NET+NUM_OF_MODEM_NET+GRP_VETEK+IND_OCC_AMOUNT+IND_NUM_DAYS_DUNN+
+  IND_AVG_3INV_50+OCC_AMOUNT_CURR_GRP+CUSTOMER_VETEK_GRP+AVG_3_INVOICES_GRP
+
+tree_amt_grp <- rpart(part_colm_amt_grp , method="class" ,data= subset(FinancePnlAmtGrp_All,In_Sample==1))
+
+# see the results
+tree_amt_grp
+
+
+rpart.plot(tree_amt_grp, extra=101,tweak=1)
+
+
+# tree_amt 
+# Dependent variable= ISLEARNING_AMT continuous
+# method="anova"
+# training data 70% in-sample
+
+
+part_colm_amt = ISLEARNING_AMT~ OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+PAYMENT_TYPE_DESC+AVG_3_INVOICES+
+  NUM_OF_NP+COUNT_INVOICE_3_YEAR+SOCIO_ECONOMIC_CODE+NUM_OF_DUNN_LST_YR+NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+
+  NUM_OF_CELL_NET+NUM_OF_VOB_NET+NUM_OF_ISP_NET+NUM_OF_MODEM_NET+GRP_VETEK+IND_OCC_AMOUNT+IND_NUM_DAYS_DUNN+
+  IND_AVG_3INV_50+OCC_AMOUNT_CURR_GRP+CUSTOMER_VETEK_GRP+AVG_3_INVOICES_GRP
+
+tree_amt <- rpart(part_colm_amt , method="anova" ,data= subset(FinancePnlAmt_All,In_Sample==1))
+# see the results
+tree_amt
+summary(tree_amt)
+
+rpart.plot(tree_amt, extra=101,tweak=1)
+
+
+########## purne #########
+
+summary(tree_amt)
+printcp(tree_amt)
+plotcp(tree_amt) # visualize cross-validation results 
+
+cp<-tree_amt$cptable[which.min(tree_amt$cptable[,"xerror"]),"CP"]
+cp
+
+tree_amt_prune<- prune(tree_amt, cp=0.027725)
+tree_amt_prune<- prune(tree_amt, cp=tree_amt$cptable[which.min(tree_amt$cptable[,"xerror"]),"CP"])
+
+rpart.plot(tree_amt_prune, extra=101,tweak=1)
+
+# two plots on one page 
+par(mfrow=c(1,2))
+rpart.plot(tree_amt , extra=101,tweak=2)
+rpart.plot(tree_amt_prune , extra=101,tweak=1)
+
+
+
+
+# minsplit=the minimum number of observations that must exist  
+tree_amt_minsplit <- rpart(part_colm_amt , method="anova" ,data= subset(FinancePnlAmt_All,In_Sample==1), 
+                           control=rpart.control(minsplit = 100))
+tree_amt_minsplit 
+rpart.plot(tree_amt_minsplit , extra=101,tweak=1)
+
+par(mfrow=c(1,2))
+rpart.plot(tree_amt , extra=101,tweak=2)
+rpart.plot(tree_amt_minsplit , extra=101,tweak=1)
+
+# minbucket = the minimum number of observations in any terminal  
+tree_amt_minbucket <- rpart(part_colm_amt , method="anova" ,data= subset(FinancePnlAmt_All,In_Sample==1), 
+                            control=rpart.control(minbucket = 25, cp=0.05))
+tree_amt_minbucket 
+rpart.plot(tree_amt_minbucket , extra=101,tweak=2)
+
+par(mfrow=c(1,2))
+rpart.plot(tree_amt , extra=101,tweak=2)
+rpart.plot(tree_amt_minbucket , extra=101,tweak=0.8)
+
+# cp 
+tree_amt_cp <- rpart(part_colm_amt , method="anova" ,data= subset(FinancePnlAmt_All,In_Sample==1), 
+                     control=rpart.control(cp=0.05))
+tree_amt_cp 
+rpart.plot(tree_amt_cp , extra=101,tweak=1)
+
+
+
+########## predict #########
+
+head(FinancePnlInd_All)
+
+predInd_param<-as.data.frame(predict(tree_ind,newdata=FinancePnlInd_All))
+head(predInd_param,3)
+
+names(predInd_param)<-'pred'
+predInd_param<-cbind(FinancePnlInd_All,predInd_param)
+head(predInd_param,5)
+
+########## Validation tests ##########
+# GINI
+
+
+install.packages("dplyr")
+library(dplyr)
+
+# create function (All rights reserved to Dan Feldman)
+calc_gini <- function(data,pred){
+  # Get predicted,actual and in/out of sample indicator after glm regression `reg1`
+  # The dependant variable is `keshel_Future`
+  # The sample indicator is `sample` 0 - InSample; 1 - OOS
+  #   tempData <- cbind(predict=predict(reg1, reg1$data, type="response")
+  #                     ,actual= reg1$data$keshel_Future
+  #                     ,sample=reg1$data$sample)
+  #   work <- as.data.frame(tempData)
+  #  
+  # Sort descending by predited then actual (in case of ties in predicted)
+  
+  
+  work <- data %>%
+    arrange(In_Sample,desc(pred)
+            ,desc(ISLEARNING_IND))
+  
+  # Calculate cumulative percentages for InSample
+  workIs <- work %>%
+    filter(In_Sample==1) %>%
+    mutate(p_pop=row_number()/n()
+           ,p_actual=row_number()/sum(ISLEARNING_IND)
+           , p_predict=cumsum(ISLEARNING_IND)/sum(ISLEARNING_IND))
+  
+  # Calculate cumulative percentages for OutOfSample
+  workOs <- work %>%
+    filter(In_Sample==0) %>%
+    mutate(p_pop=row_number()/n()
+           ,p_actual=row_number()/sum(ISLEARNING_IND)
+           , p_predict=cumsum(ISLEARNING_IND)/sum(ISLEARNING_IND))
+  
+  # Put them together
+  work <- rbind(workIs,workOs)
+  work$p_actual[work$p_actual>1] <- 1
+  
+  # Calculate the differences
+  work1 <- work %>%
+    mutate(diff_best=p_actual-p_pop
+           ,diff_predict=p_predict-p_pop)
+  
+  
+  # Calculate Gini 
+  gini1 <- work1 %>%
+    group_by(In_Sample) %>%
+    summarise(sum_p=sum(diff_predict)
+              ,sum_a=sum(diff_best)
+              , gini=sum_p/sum_a
+              # , auc=0.5*gini+0.5
+    ) %>%
+    mutate(regression="Tree"
+           ,Sample = ifelse(In_Sample==1,"In Sample","Out of Sample")) %>%
+    select(regression ,Sample,gini #,auc
+    )
+  print(gini1)
+  
+}
+
+# run the function
+calc_gini(predInd_param,pred)
+
+
+
+########## randomForest ##########
+
+install.packages("randomForest")
+library(randomForest)
+
+
+tree_randomF <- randomForest( ISLEARNING_IND ~ OCC_AMOUNT_CURR_WITH_VAT+CUSTOMER_VETEK+AVG_3_INVOICES+
+                                NUM_OF_NP+COUNT_INVOICE_3_YEAR+NUM_OF_DUNN_LST_YR+NUM_DAYS_DUNN_LST_YR+TIME_FROM_LAST_DUNN+
+                                NUM_OF_CELL_NET+NUM_OF_VOB_NET+NUM_OF_ISP_NET+NUM_OF_MODEM_NET,
+                              data=FinancePnlInd_All,importance=TRUE,ntree=10)
+
+tree_randomF
+
+
+# predict
+
+predInd_rndf<-as.data.frame(predict(tree_randomF,newdata=FinancePnlInd_All))
+head(predInd_rndf,10)
+
+names(predInd_rndf)<-'pred'
+predInd_rndf<-cbind(FinancePnlInd_All,predInd_rndf)
+head(predInd_rndf,10)
+
+# gini
+
+calc_gini(predInd_rndf,pred)
+
+
+
+
+
+
+
+######### visul rpart.plot             
+
+
+#basic
+#Each node shows 
+# 1.the predicted class 
+# 2.the predicted probability 
+# 3.the percentage of observations in the node.
+rpart.plot(tree_amt)
+# Shorten variable names
+rpart.plot(tree_amt,varlen=5)
+
+#colores
+rpart.plot(tree_amt, box.palette = "auto")
+rpart.plot(tree_amt, box.palette = 0)
+rpart.plot(tree_amt, box.palette = "Grays")
+rpart.plot(tree_amt, box.palette = "Reds")
+#labels
+rpart.plot(tree_amt,type = 0 ) # defult
+rpart.plot(tree_amt,type = 1 ) # label all nodes
+rpart.plot(tree_amt,type = 2 ) # split labels below node labels
+rpart.plot(tree_amt,type = 3 )
+rpart.plot(tree_amt,type = 4 )
+#font size
+rpart.plot(tree_amt, box.palette = "Reds", tweak=5  )
+#extra
+rpart.plot(tree_amt,extra=0) #default
+rpart.plot(tree_amt,extra=1) #nbr of obs
+rpart.plot(tree_amt,extra=100) #percentage of obs
+rpart.plot(tree_amt,extra=101) #nbr of obs & percentage of obs
+#rpart.plot(tree_amt,extra=4)  
+#rpart.plot(tree_amt,extra=5) 
+#rpart.plot(tree_amt,extra=6)
+#rpart.plot(tree_amt,extra=7) 
+#rpart.plot(tree_amt,extra=8) 
+#rpart.plot(tree_amt,extra=9) 
+#rpart.plot(tree_amt,extra=106) # prob of 2nd class and percent of obs
+#rpart.plot(tree_amt,extra=104)
+# lines
+rpart.plot(tree_amt,extra=101, branch.lty=3, tweak=5)
+rpart.plot(tree_amt,extra=101, branch.lty=1)
+rpart.plot(tree_amt,extra=101, branch.lty=2)
+# 
+rpart.plot(tree_amt, border.col=0)
+rpart.plot(tree_amt, leaf.round=0)
+rpart.plot(tree_amt=5, yesno=F)
+rpart.plot(tree_amt, uniform=F)
+rpart.plot(tree_amt, branch=1)
+rpart.plot(tree_amt, prefix="fraction\n" , tweak=5)
+prp(tree_amt, extra=1, uniform=F,branch=1, yesno=F, border.col=0, xsep="/")
+prp(tree_amt, branch.type=5, yesno=FALSE, faclen=0)
